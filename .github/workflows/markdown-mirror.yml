@@ -1,0 +1,82 @@
+# Draft workflow: publish a Markdown mirror of docs.altinn.studio to GitHub Pages, for genki's website source.
+# Content: current Altinn/altinn-studio-docs master, merged with the markdown output from
+# bdb-dd/altinn-studio-docs@markdown-mirror (PR #2484 plus a config.toml merge resolution).
+# genki reads <pages-url>/sitemap-markdown.xml on its weekly schedule (Mondays 03:00 UTC).
+name: Markdown mirror
+
+on:
+  schedule:
+    - cron: "0 1 * * 1" # Mondays 01:00 UTC, before genki's weekly ingest
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the markdown output branch
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: bdb-dd/altinn-studio-docs
+          ref: markdown-mirror
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Merge current upstream content
+        run: |
+          git remote add upstream https://github.com/Altinn/altinn-studio-docs.git
+          git fetch --no-tags upstream master
+          git -c user.name="markdown-mirror" -c user.email="markdown-mirror@users.noreply.github.com" \
+            merge --no-edit upstream/master || {
+              echo "::error::Upstream master no longer merges cleanly into markdown-mirror; resolve on the branch and re-run."
+              git diff --name-only --diff-filter=U
+              exit 1
+            }
+          git submodule update --init --recursive
+
+      - name: Set up Hugo
+        uses: peaceiris/actions-hugo@2752ce1d29631191ea3f27c23495fa06139a5b78 # v3.2.1
+        with:
+          hugo-version: "0.162.0"
+          extended: true
+
+      - name: Set up Pages
+        id: pages
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+
+      - name: Build
+        env:
+          HUGO_ENVIRONMENT: production
+          HUGO_ENV: production
+        run: hugo --minify --baseURL "${{ steps.pages.outputs.base_url }}/"
+
+      - name: Check the markdown output
+        run: |
+          test -s public/sitemap-markdown.xml
+          pages=$(find public -name index.md | wc -l)
+          echo "index.md pages: $pages"
+          test "$pages" -gt 1500
+
+      - name: Upload
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: ./public
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1
